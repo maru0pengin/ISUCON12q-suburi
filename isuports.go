@@ -27,6 +27,8 @@ import (
 	"github.com/lestrrat-go/jwx/v2/jwa"
 	"github.com/lestrrat-go/jwx/v2/jwk"
 	"github.com/lestrrat-go/jwx/v2/jwt"
+	"github.com/newrelic/go-agent/v3/integrations/nrecho-v4"
+	"github.com/newrelic/go-agent/v3/newrelic"
 )
 
 const (
@@ -136,7 +138,18 @@ func Run() {
 	e := echo.New()
 	e.Debug = true
 	e.Logger.SetLevel(log.DEBUG)
-
+	var app *newrelic.Application
+	var err error
+	app, err = newrelic.NewApplication(
+		newrelic.ConfigAppName(os.Getenv("NEW_RELIC_APP_NAME")),
+		newrelic.ConfigLicense(os.Getenv("NEW_RELIC_LICENSE_KEY")),
+		newrelic.ConfigAppLogEnabled(false),
+	)
+	if err != nil {
+		fmt.Errorf("failed to init newrelic NewApplication reason: %v", err)
+	} else {
+		fmt.Println("newrelic init success")
+	}
 	var (
 		sqlLogger io.Closer
 		err       error
@@ -153,6 +166,7 @@ func Run() {
 
 	e.Use(middleware.Logger())
 	e.Use(middleware.Recover())
+	e.Use(nrecho.Middleware(app))
 	e.Use(SetCacheControlPrivate)
 
 	// SaaS管理者向けAPI
