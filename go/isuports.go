@@ -27,7 +27,8 @@ import (
 	"github.com/lestrrat-go/jwx/v2/jwa"
 	"github.com/lestrrat-go/jwx/v2/jwk"
 	"github.com/lestrrat-go/jwx/v2/jwt"
-	"github.com/newrelic/go-agent/v3/integrations/nrecho-v4"
+
+	nrecho "github.com/newrelic/go-agent/v3/integrations/nrecho-v4"
 	"github.com/newrelic/go-agent/v3/newrelic"
 )
 
@@ -139,14 +140,16 @@ func Run() {
 	e.Debug = true
 	e.Logger.SetLevel(log.DEBUG)
 	var app *newrelic.Application
-	var err error
-	app, err = newrelic.NewApplication(
-		newrelic.ConfigAppName(os.Getenv("NEW_RELIC_APP_NAME")),
-		newrelic.ConfigLicense(os.Getenv("NEW_RELIC_LICENSE_KEY")),
-		newrelic.ConfigAppLogEnabled(false),
+	var nre_err error
+	app, nre_err = newrelic.NewApplication(
+		newrelic.ConfigAppName("NEW_RELIC_APP_NAME_EXAMPLE"),
+		newrelic.ConfigLicense("NEW_RELIC_LICENSE_KEY_EXAMPLE"),
+		// newrelic.ConfigAppName(getEnv("NEW_RELIC_APP_NAME", "")),
+		// newrelic.ConfigLicense(getEnv("NEW_RELIC_LICENSE_KEY", "")),
+		newrelic.ConfigAppLogEnabled(true),
 	)
-	if err != nil {
-		fmt.Errorf("failed to init newrelic NewApplication reason: %v", err)
+	if nre_err != nil {
+		fmt.Errorf("failed to init newrelic NewApplication reason: %v", nre_err)
 	} else {
 		fmt.Println("newrelic init success")
 	}
