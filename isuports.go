@@ -27,7 +27,6 @@ import (
 	"github.com/lestrrat-go/jwx/v2/jwa"
 	"github.com/lestrrat-go/jwx/v2/jwk"
 	"github.com/lestrrat-go/jwx/v2/jwt"
-	"github.com/newrelic/go-agent/v3/integrations/nrecho-v4"
 )
 
 const (
@@ -134,22 +133,8 @@ func SetCacheControlPrivate(next echo.HandlerFunc) echo.HandlerFunc {
 
 // Run は cmd/isuports/main.go から呼ばれるエントリーポイントです
 func Run() {
-	var app *newrelic.Application
-	var app *newrelic.Application
-	var err error
-	app, err := newrelic.NewApplication(
-	　　newrelic.ConfigAppName(os.Getenv("NEW_RELIC_APP_NAME")),
-	　　newrelic.ConfigLicense(os.Getenv("NEW_RELIC_LICENSE_KEY")),
-		   newrelic.ConfigAppLogEnabled(false),
-	)
-	if err != nil {
-		   fmt.Errorf("failed to init newrelic NewApplication reason: %v", err)
-	} else {
-		   fmt.Println("newrelic init success")
-	}
 	e := echo.New()
 	e.Debug = true
-	e.Use(nrecho.Middleware(app))
 	e.Logger.SetLevel(log.DEBUG)
 
 	var (
@@ -558,14 +543,7 @@ func billingReportByCompetition(ctx context.Context, tenantDB dbOrTx, tenantID i
 	if err != nil {
 		return nil, fmt.Errorf("error retrieveCompetition: %w", err)
 	}
-	// 早期リターン
-	if !comp.FinishedAt.Valid {
-		return &BillingReport{
-		CompetitionID:    comp.ID,
-		CompetitionTitle: comp.Title,
-		// 他のフィールドは計算不要
-		}, nil
-	}
+
 	// ランキングにアクセスした参加者のIDを取得する
 	vhs := []VisitHistorySummaryRow{}
 	if err := adminDB.SelectContext(
