@@ -13,7 +13,8 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
-	"sort"
+
+	// "sort"
 	"strconv"
 	"strings"
 	"time"
@@ -27,8 +28,11 @@ import (
 	"github.com/lestrrat-go/jwx/v2/jwa"
 	"github.com/lestrrat-go/jwx/v2/jwk"
 	"github.com/lestrrat-go/jwx/v2/jwt"
-	"github.com/newrelic/go-agent/v3/integrations/nrecho-v4"
+
+	nrecho "github.com/newrelic/go-agent/v3/integrations/nrecho-v4"
 	"github.com/newrelic/go-agent/v3/newrelic"
+
+	"sync/atomic"
 )
 
 const (
@@ -100,29 +104,39 @@ func createTenantDB(id int64) error {
 }
 
 // システム全体で一意なIDを生成する
+// func dispenseID(ctx context.Context) (string, error) {
+// 	var id int64
+// 	var lastErr error
+// 	for i := 0; i < 100; i++ {
+// 		var ret sql.Result
+// 		ret, err := adminDB.ExecContext(ctx, "REPLACE INTO id_generator (stub) VALUES (?);", "a")
+// 		if err != nil {
+// 			if merr, ok := err.(*mysql.MySQLError); ok && merr.Number == 1213 { // deadlock
+// 				lastErr = fmt.Errorf("error REPLACE INTO id_generator: %w", err)
+// 				continue
+// 			}
+// 			return "", fmt.Errorf("error REPLACE INTO id_generator: %w", err)
+// 		}
+// 		id, err = ret.LastInsertId()
+// 		if err != nil {
+// 			return "", fmt.Errorf("error ret.LastInsertId: %w", err)
+// 		}
+// 		break
+// 	}
+// 	if id != 0 {
+// 		return fmt.Sprintf("%x", id), nil
+// 	}
+// 	return "", lastErr
+// }
+
+var (
+	auto_increment_id int64 = 0
+	auto_increment_id_base string = strconv.FormatInt(time.Now().Unix()%100000, 10)
+)
+	
 func dispenseID(ctx context.Context) (string, error) {
-	var id int64
-	var lastErr error
-	for i := 0; i < 100; i++ {
-		var ret sql.Result
-		ret, err := adminDB.ExecContext(ctx, "REPLACE INTO id_generator (stub) VALUES (?);", "a")
-		if err != nil {
-			if merr, ok := err.(*mysql.MySQLError); ok && merr.Number == 1213 { // deadlock
-				lastErr = fmt.Errorf("error REPLACE INTO id_generator: %w", err)
-				continue
-			}
-			return "", fmt.Errorf("error REPLACE INTO id_generator: %w", err)
-		}
-		id, err = ret.LastInsertId()
-		if err != nil {
-			return "", fmt.Errorf("error ret.LastInsertId: %w", err)
-		}
-		break
-	}
-	if id != 0 {
-		return fmt.Sprintf("%x", id), nil
-	}
-	return "", lastErr
+	newId := atomic.AddInt64(&auto_increment_id, 1)
+	return fmt.Sprintf("%d%s", newId, auto_increment_id_base), nil
 }
 
 // 全APIにCache-Control: privateを設定する
@@ -135,24 +149,27 @@ func SetCacheControlPrivate(next echo.HandlerFunc) echo.HandlerFunc {
 
 // Run は cmd/isuports/main.go から呼ばれるエントリーポイントです
 func Run() {
-	e := echo.New()
-	e.Debug = true
-	e.Logger.SetLevel(log.DEBUG)
 	var app *newrelic.Application
 	var err error
 	app, err = newrelic.NewApplication(
-		newrelic.ConfigAppName(os.Getenv("NEW_RELIC_APP_NAME")),
-		newrelic.ConfigLicense(os.Getenv("NEW_RELIC_LICENSE_KEY")),
-		newrelic.ConfigAppLogEnabled(false),
+		// newrelic.ConfigAppName("NEW_RELIC_APP_NAME_EXAMPLE"),
+		// newrelic.ConfigLicense("NEW_RELIC_LICENSE_KEY_EXAMPLE"),
+		newrelic.ConfigAppName(getEnv("NEW_RELIC_APP_NAME", "")),
+		newrelic.ConfigLicense(getEnv("NEW_RELIC_LICENSE_KEY", "")),
+		newrelic.ConfigAppLogEnabled(true),
 	)
 	if err != nil {
 		fmt.Errorf("failed to init newrelic NewApplication reason: %v", err)
 	} else {
 		fmt.Println("newrelic init success")
 	}
+
+	e := echo.New()
+	e.Debug = true
+	e.Logger.SetLevel(log.DEBUG)
+
 	var (
 		sqlLogger io.Closer
-		err       error
 	)
 	// sqliteのクエリログを出力する設定
 	// 環境変数 ISUCON_SQLITE_TRACE_FILE を設定すると、そのファイルにクエリログをJSON形式で出力する
@@ -437,8 +454,8 @@ type PlayerScoreRow struct {
 
 // 排他ロックのためのファイル名を生成する
 func lockFilePath(id int64) string {
-	tenantDBDir := getEnv("ISUCON_TENANT_DB_DIR", "../tenant_db")
-	return filepath.Join(tenantDBDir, fmt.Sprintf("%d.lock", id))
+	tenantDBDir := getEnv("ISUCON_TENANT_DB_DIR", "../tenant_db") // sqlite
+	return filepath.Join(tenantDBDir, fmt.Sprintf("%d.lock", id)) // ./tenant_db/[id].lock
 }
 
 // 排他ロックする
@@ -1299,11 +1316,11 @@ func playerHandler(c echo.Context) error {
 }
 
 type CompetitionRank struct {
-	Rank              int64  `json:"rank"`
-	Score             int64  `json:"score"`
-	PlayerID          string `json:"player_id"`
-	PlayerDisplayName string `json:"player_display_name"`
-	RowNum            int64  `json:"-"` // APIレスポンスのJSONには含まれない
+	Rank              int64  `db:"rank" json:"rank"`
+	Score             int64  `db:"score" json:"score"`
+	PlayerID          string `db:"player_id" json:"player_id"`
+	PlayerDisplayName string `db:"player_display_name" json:"player_display_name"`
+	RowNum            int64  `db:"row_num" json:"-"` // APIレスポンスのJSONには含まれない
 }
 
 type CompetitionRankingHandlerResult struct {
@@ -1379,57 +1396,71 @@ func competitionRankingHandler(c echo.Context) error {
 		return fmt.Errorf("error flockByTenantID: %w", err)
 	}
 	defer fl.Close()
-	pss := []PlayerScoreRow{}
+	// pss := []PlayerScoreRow{}
+	ranks := []CompetitionRank{}
+	// note: 大会の全スコアを降順で取得
 	if err := tenantDB.SelectContext(
 		ctx,
-		&pss,
-		"SELECT * FROM player_score WHERE tenant_id = ? AND competition_id = ? ORDER BY row_num DESC",
+		&ranks,
+		`SELECT
+			ROW_NUMBER() OVER (ORDER BY score DESC) AS rank,
+			ps.score AS score,
+			p.id AS player_id,
+			p.display_name AS player_display_name,
+			ps.row_num AS row_num
+		FROM player_score AS ps
+		JOIN player AS p ON ps.player_id = p.id
+		WHERE ps.tenant_id = ? AND ps.competition_id = ?
+		ORDER BY score DESC
+		LIMIT 100 OFFSET ?`,
 		tenant.ID,
 		competitionID,
+		rankAfter,
 	); err != nil {
 		return fmt.Errorf("error Select player_score: tenantID=%d, competitionID=%s, %w", tenant.ID, competitionID, err)
 	}
-	ranks := make([]CompetitionRank, 0, len(pss))
-	scoredPlayerSet := make(map[string]struct{}, len(pss))
-	for _, ps := range pss {
-		// player_scoreが同一player_id内ではrow_numの降順でソートされているので
-		// 現れたのが2回目以降のplayer_idはより大きいrow_numでスコアが出ているとみなせる
-		if _, ok := scoredPlayerSet[ps.PlayerID]; ok {
-			continue
-		}
-		scoredPlayerSet[ps.PlayerID] = struct{}{}
-		p, err := retrievePlayer(ctx, tenantDB, ps.PlayerID)
-		if err != nil {
-			return fmt.Errorf("error retrievePlayer: %w", err)
-		}
-		ranks = append(ranks, CompetitionRank{
-			Score:             ps.Score,
-			PlayerID:          p.ID,
-			PlayerDisplayName: p.DisplayName,
-			RowNum:            ps.RowNum,
-		})
-	}
-	sort.Slice(ranks, func(i, j int) bool {
-		if ranks[i].Score == ranks[j].Score {
-			return ranks[i].RowNum < ranks[j].RowNum
-		}
-		return ranks[i].Score > ranks[j].Score
-	})
-	pagedRanks := make([]CompetitionRank, 0, 100)
-	for i, rank := range ranks {
-		if int64(i) < rankAfter {
-			continue
-		}
-		pagedRanks = append(pagedRanks, CompetitionRank{
-			Rank:              int64(i + 1),
-			Score:             rank.Score,
-			PlayerID:          rank.PlayerID,
-			PlayerDisplayName: rank.PlayerDisplayName,
-		})
-		if len(pagedRanks) >= 100 {
-			break
-		}
-	}
+	// fmt.Println(ranks)
+	// ranks := make([]CompetitionRank, 0, len(pss))
+	// scoredPlayerSet := make(map[string]struct{}, len(pss))
+	// for _, ps := range pss {
+	// 	// player_scoreが同一player_id内ではrow_numの降順でソートされているので
+	// 	// 現れたのが2回目以降のplayer_idはより大きいrow_numでスコアが出ているとみなせる
+	// 	if _, ok := scoredPlayerSet[ps.PlayerID]; ok {
+	// 		continue
+	// 	}
+	// 	scoredPlayerSet[ps.PlayerID] = struct{}{}
+	// 	p, err := retrievePlayer(ctx, tenantDB, ps.PlayerID)
+	// 	if err != nil {
+	// 		return fmt.Errorf("error retrievePlayer: %w", err)
+	// 	}
+	// 	ranks = append(ranks, CompetitionRank{
+	// 		Score:             ps.Score,
+	// 		PlayerID:          p.ID,
+	// 		PlayerDisplayName: p.DisplayName,
+	// 		RowNum:            ps.RowNum,
+	// 	})
+	// }
+	// sort.Slice(ranks, func(i, j int) bool {
+	// 	if ranks[i].Score == ranks[j].Score {
+	// 		return ranks[i].RowNum < ranks[j].RowNum
+	// 	}
+	// 	return ranks[i].Score > ranks[j].Score
+	// })
+	// pagedRanks := make([]CompetitionRank, 0, 100)
+	// for i, rank := range ranks {
+	// 	if int64(i) < rankAfter {
+	// 		continue
+	// 	}
+	// 	pagedRanks = append(pagedRanks, CompetitionRank{
+	// 		Rank:              int64(i + 1),
+	// 		Score:             rank.Score,
+	// 		PlayerID:          rank.PlayerID,
+	// 		PlayerDisplayName: rank.PlayerDisplayName,
+	// 	})
+	// 	if len(pagedRanks) >= 100 {
+	// 		break
+	// 	}
+	// }
 
 	res := SuccessResult{
 		Status: true,
@@ -1439,7 +1470,7 @@ func competitionRankingHandler(c echo.Context) error {
 				Title:      competition.Title,
 				IsFinished: competition.FinishedAt.Valid,
 			},
-			Ranks: pagedRanks,
+			Ranks: ranks,
 		},
 	}
 	return c.JSON(http.StatusOK, res)
