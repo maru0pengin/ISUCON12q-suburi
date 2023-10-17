@@ -27,7 +27,34 @@ import (
 	"github.com/lestrrat-go/jwx/v2/jwa"
 	"github.com/lestrrat-go/jwx/v2/jwk"
 	"github.com/lestrrat-go/jwx/v2/jwt"
+	"sync"
+
+	"sync/atomic"
 )
+
+type MutexManager struct {
+	m     map[int64]*sync.RWMutex
+	mutex sync.Mutex
+}
+
+func NewMutexManager() *MutexManager {
+	return &MutexManager{
+		m: make(map[int64]*sync.RWMutex),
+	}
+}
+
+func (mm *MutexManager) GetMutex(id int64) *sync.RWMutex {
+	mm.mutex.Lock()
+	defer mm.mutex.Unlock()
+
+	if _, ok := mm.m[id]; !ok {
+		mm.m[id] = &sync.RWMutex{}
+	}
+	return mm.m[id]
+}
+
+var mutexManager = NewMutexManager()
+
 
 const (
 	tenantDBSchemaFilePath = "../sql/tenant/10_schema.sql"
@@ -97,31 +124,41 @@ func createTenantDB(id int64) error {
 	return nil
 }
 
-// システム全体で一意なIDを生成する
+var (
+	auto_increment_id int64 = 0
+	auto_increment_id_base string = strconv.FormatInt(time.Now().Unix()%100000, 10)
+	)
+	
 func dispenseID(ctx context.Context) (string, error) {
-	var id int64
-	var lastErr error
-	for i := 0; i < 100; i++ {
-		var ret sql.Result
-		ret, err := adminDB.ExecContext(ctx, "REPLACE INTO id_generator (stub) VALUES (?);", "a")
-		if err != nil {
-			if merr, ok := err.(*mysql.MySQLError); ok && merr.Number == 1213 { // deadlock
-				lastErr = fmt.Errorf("error REPLACE INTO id_generator: %w", err)
-				continue
-			}
-			return "", fmt.Errorf("error REPLACE INTO id_generator: %w", err)
-		}
-		id, err = ret.LastInsertId()
-		if err != nil {
-			return "", fmt.Errorf("error ret.LastInsertId: %w", err)
-		}
-		break
-	}
-	if id != 0 {
-		return fmt.Sprintf("%x", id), nil
-	}
-	return "", lastErr
+	newId := atomic.AddInt64(&auto_increment_id, 1)
+	return fmt.Sprintf("%d%s", newId, auto_increment_id_base), nil
 }
+
+// システム全体で一意なIDを生成する
+// func dispenseID(ctx context.Context) (string, error) {
+// 	var id int64
+// 	var lastErr error
+// 	for i := 0; i < 100; i++ {
+// 		var ret sql.Result
+// 		ret, err := adminDB.ExecContext(ctx, "REPLACE INTO id_generator (stub) VALUES (?);", "a")
+// 		if err != nil {
+// 			if merr, ok := err.(*mysql.MySQLError); ok && merr.Number == 1213 { // deadlock
+// 				lastErr = fmt.Errorf("error REPLACE INTO id_generator: %w", err)
+// 				continue
+// 			}
+// 			return "", fmt.Errorf("error REPLACE INTO id_generator: %w", err)
+// 		}
+// 		id, err = ret.LastInsertId()
+// 		if err != nil {
+// 			return "", fmt.Errorf("error ret.LastInsertId: %w", err)
+// 		}
+// 		break
+// 	}
+// 	if id != 0 {
+// 		return fmt.Sprintf("%x", id), nil
+// 	}
+// 	return "", lastErr
+// }
 
 // 全APIにCache-Control: privateを設定する
 func SetCacheControlPrivate(next echo.HandlerFunc) echo.HandlerFunc {
@@ -565,11 +602,15 @@ func billingReportByCompetition(ctx context.Context, tenantDB dbOrTx, tenantID i
 	}
 
 	// player_scoreを読んでいるときに更新が走ると不整合が起こるのでロックを取得する
-	fl, err := flockByTenantID(tenantID)
-	if err != nil {
-		return nil, fmt.Errorf("error flockByTenantID: %w", err)
-	}
-	defer fl.Close()
+	// fl, err := flockByTenantID(tenantID)
+	// if err != nil {
+	// return nil, fmt.Errorf("error flockByTenantID: %w", err)
+	// }
+	// defer fl.Close()
+
+	rwMutex := mutexManager.GetMutex(tenantID)
+	rwMutex.RLock()
+	defer rwMutex.RUnlock()
 
 	// スコアを登録した参加者のIDを取得する
 	scoredPlayerIDs := []string{}
@@ -1044,11 +1085,16 @@ func competitionScoreHandler(c echo.Context) error {
 	}
 
 	// / DELETEしたタイミングで参照が来ると空っぽのランキングになるのでロックする
-	fl, err := flockByTenantID(v.tenantID)
-	if err != nil {
-		return fmt.Errorf("error flockByTenantID: %w", err)
-	}
-	defer fl.Close()
+	// fl, err := flockByTenantID(v.tenantID)
+	// if err != nil {
+	// 	return fmt.Errorf("error flockByTenantID: %w", err)
+	// }
+	// defer fl.Close()
+
+	rwMutex := mutexManager.GetMutex(v.tenantID)
+	rwMutex.Lock()
+	defer rwMutex.Unlock()
+
 	var rowNum int64
 	playerScoreRows := []PlayerScoreRow{}
 	for {
@@ -1232,11 +1278,16 @@ func playerHandler(c echo.Context) error {
 	}
 
 	// player_scoreを読んでいるときに更新が走ると不整合が起こるのでロックを取得する
-	fl, err := flockByTenantID(v.tenantID)
-	if err != nil {
-		return fmt.Errorf("error flockByTenantID: %w", err)
-	}
-	defer fl.Close()
+	// fl, err := flockByTenantID(v.tenantID)
+	// if err != nil {
+	// 	return fmt.Errorf("error flockByTenantID: %w", err)
+	// }
+	// defer fl.Close()
+
+	rwMutex := mutexManager.GetMutex(v.tenantID)
+	rwMutex.RLock()
+	defer rwMutex.RUnlock()
+
 	pss := make([]PlayerScoreRow, 0, len(cs))
 	for _, c := range cs {
 		ps := PlayerScoreRow{}
@@ -1359,12 +1410,19 @@ func competitionRankingHandler(c echo.Context) error {
 		}
 	}
 
+	/*****/
+
 	// player_scoreを読んでいるときに更新が走ると不整合が起こるのでロックを取得する
-	fl, err := flockByTenantID(v.tenantID)
-	if err != nil {
-		return fmt.Errorf("error flockByTenantID: %w", err)
-	}
-	defer fl.Close()
+	// fl, err := flockByTenantID(v.tenantID)
+	// if err != nil {
+	// 	return fmt.Errorf("error flockByTenantID: %w", err)
+	// }
+	// defer fl.Close()
+	
+	rwMutex := mutexManager.GetMutex(v.tenantID)
+	rwMutex.RLock()
+	defer rwMutex.RUnlock()
+
 	pss := []PlayerScoreRow{}
 	if err := tenantDB.SelectContext(
 		ctx,
