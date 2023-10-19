@@ -523,11 +523,29 @@ type VisitHistorySummaryRow struct {
 	MinCreatedAt int64  `db:"min_created_at"`
 }
 
+var billingCache = NewCache[*BillingReport]()
+
+
 // 大会ごとの課金レポートを計算する
 func billingReportByCompetition(ctx context.Context, tenantDB dbOrTx, tenantID int64, competitonID string) (*BillingReport, error) {
 	comp, err := retrieveCompetition(ctx, tenantDB, competitonID)
 	if err != nil {
 		return nil, fmt.Errorf("error retrieveCompetition: %w", err)
+	}
+
+	// 大会が終了していない場合は計算する必要がないので早期リターン
+	if !comp.FinishedAt.Valid {
+		return &BillingReport{
+		  CompetitionID:    comp.ID,
+		  CompetitionTitle: comp.Title,
+		  // 他のフィールドは計算不要
+		}, nil
+	}
+
+	// もしキャッシュがあれば，もう変わらないためそれを使う
+	cached, ok := billingCache.Get(competitonID)
+	if ok {
+	  return cached, nil
 	}
 
 	// ランキングにアクセスした参加者のIDを取得する
@@ -584,7 +602,8 @@ func billingReportByCompetition(ctx context.Context, tenantDB dbOrTx, tenantID i
 			}
 		}
 	}
-	return &BillingReport{
+
+	var report = &BillingReport{
 		CompetitionID:     comp.ID,
 		CompetitionTitle:  comp.Title,
 		PlayerCount:       playerCount,
@@ -592,7 +611,13 @@ func billingReportByCompetition(ctx context.Context, tenantDB dbOrTx, tenantID i
 		BillingPlayerYen:  100 * playerCount, // スコアを登録した参加者は100円
 		BillingVisitorYen: 10 * visitorCount, // ランキングを閲覧だけした(スコアを登録していない)参加者は10円
 		BillingYen:        100*playerCount + 10*visitorCount,
-	}, nil
+	}
+	// 計算後の処理でキャッシュする
+	if comp.FinishedAt.Valid {
+		billingCache.Set(comp.ID, report)
+	}
+
+	return report , nil
 }
 
 type TenantWithBilling struct {
