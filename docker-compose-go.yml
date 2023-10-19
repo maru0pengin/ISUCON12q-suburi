@@ -16,4 +16,5 @@ services:
       - /home/isucon/webapp/public.pem:/home/isucon/webapp/public.pem:ro
       - /home/isucon/initial_data:/home/isucon/initial_data
       - /home/isucon/tmp:/home/isucon/tmp
+      - /home/isucon/webapp/go:/home/isucon/webapp/go
     init: true

@@ -13,6 +13,8 @@ RUN apt-get update && \
 RUN useradd --uid=1001 --create-home isucon
 USER isucon
 
+RUN go install github.com/cosmtrek/air@latest
+
 RUN mkdir -p /home/isucon/webapp/go
 WORKDIR /home/isucon/webapp/go
 COPY --chown=isucon:isucon ./ /home/isucon/webapp/go/
@@ -20,4 +22,5 @@ COPY --chown=isucon:isucon ./ /home/isucon/webapp/go/
 ENV GOPATH=/home/isucon/tmp/go
 ENV GOCACHE=/home/isucon/tmp/go/.cache
 
-CMD ["go", "run", "./cmd/isuports/main.go"]
+# CMD ["go", "run", "./cmd/isuports/main.go"]
+CMD ["air", "-c", ".air.toml"]
