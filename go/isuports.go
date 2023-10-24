@@ -13,10 +13,6 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
-<<<<<<< HEAD
-	"sort"
-=======
->>>>>>> feat/1019
 	"strconv"
 	"strings"
 	"time"
@@ -30,13 +26,8 @@ import (
 	"github.com/lestrrat-go/jwx/v2/jwa"
 	"github.com/lestrrat-go/jwx/v2/jwk"
 	"github.com/lestrrat-go/jwx/v2/jwt"
-<<<<<<< HEAD
-	"github.com/newrelic/go-agent/v3/integrations/nrecho-v4"
-	"github.com/newrelic/go-agent/v3/newrelic"
-=======
 	
 	"sync/atomic"
->>>>>>> feat/1019
 )
 
 const (
@@ -107,32 +98,6 @@ func createTenantDB(id int64) error {
 	return nil
 }
 
-<<<<<<< HEAD
-// システム全体で一意なIDを生成する
-func dispenseID(ctx context.Context) (string, error) {
-	var id int64
-	var lastErr error
-	for i := 0; i < 100; i++ {
-		var ret sql.Result
-		ret, err := adminDB.ExecContext(ctx, "REPLACE INTO id_generator (stub) VALUES (?);", "a")
-		if err != nil {
-			if merr, ok := err.(*mysql.MySQLError); ok && merr.Number == 1213 { // deadlock
-				lastErr = fmt.Errorf("error REPLACE INTO id_generator: %w", err)
-				continue
-			}
-			return "", fmt.Errorf("error REPLACE INTO id_generator: %w", err)
-		}
-		id, err = ret.LastInsertId()
-		if err != nil {
-			return "", fmt.Errorf("error ret.LastInsertId: %w", err)
-		}
-		break
-	}
-	if id != 0 {
-		return fmt.Sprintf("%x", id), nil
-	}
-	return "", lastErr
-=======
 var (
 	auto_increment_id int64 = 0
 	auto_increment_id_base string = strconv.FormatInt(time.Now().Unix()%100000, 10)
@@ -141,7 +106,6 @@ var (
 func dispenseID(ctx context.Context) (string, error) {
 	newId := atomic.AddInt64(&auto_increment_id, 1)
 	return fmt.Sprintf("%d%s", newId, auto_increment_id_base), nil
->>>>>>> feat/1019
 }
 
 // 全APIにCache-Control: privateを設定する
@@ -157,22 +121,6 @@ func Run() {
 	e := echo.New()
 	e.Debug = true
 	e.Logger.SetLevel(log.DEBUG)
-<<<<<<< HEAD
-	var app *newrelic.Application
-	var err error
-	app, err = newrelic.NewApplication(
-		newrelic.ConfigAppName(os.Getenv("NEW_RELIC_APP_NAME")),
-		newrelic.ConfigLicense(os.Getenv("NEW_RELIC_LICENSE_KEY")),
-		newrelic.ConfigAppLogEnabled(false),
-	)
-	if err != nil {
-		fmt.Errorf("failed to init newrelic NewApplication reason: %v", err)
-	} else {
-		fmt.Println("newrelic init success")
-	}
-=======
-
->>>>>>> feat/1019
 	var (
 		sqlLogger io.Closer
 		err       error
@@ -189,10 +137,6 @@ func Run() {
 
 	e.Use(middleware.Logger())
 	e.Use(middleware.Recover())
-<<<<<<< HEAD
-	e.Use(nrecho.Middleware(app))
-=======
->>>>>>> feat/1019
 	e.Use(SetCacheControlPrivate)
 
 	// SaaS管理者向けAPI
@@ -577,12 +521,9 @@ type VisitHistorySummaryRow struct {
 	MinCreatedAt int64  `db:"min_created_at"`
 }
 
-<<<<<<< HEAD
-=======
 var billingCache = NewCache[*BillingReport]()
 
 
->>>>>>> feat/1019
 // 大会ごとの課金レポートを計算する
 func billingReportByCompetition(ctx context.Context, tenantDB dbOrTx, tenantID int64, competitonID string) (*BillingReport, error) {
 	comp, err := retrieveCompetition(ctx, tenantDB, competitonID)
@@ -590,8 +531,6 @@ func billingReportByCompetition(ctx context.Context, tenantDB dbOrTx, tenantID i
 		return nil, fmt.Errorf("error retrieveCompetition: %w", err)
 	}
 
-<<<<<<< HEAD
-=======
 	// 大会が終了していない場合は計算する必要がないので早期リターン
 	if !comp.FinishedAt.Valid {
 		return &BillingReport{
@@ -607,7 +546,6 @@ func billingReportByCompetition(ctx context.Context, tenantDB dbOrTx, tenantID i
 	  return cached, nil
 	}
 
->>>>>>> feat/1019
 	// ランキングにアクセスした参加者のIDを取得する
 	vhs := []VisitHistorySummaryRow{}
 	if err := adminDB.SelectContext(
@@ -662,12 +600,8 @@ func billingReportByCompetition(ctx context.Context, tenantDB dbOrTx, tenantID i
 			}
 		}
 	}
-<<<<<<< HEAD
-	return &BillingReport{
-=======
 
 	var report = &BillingReport{
->>>>>>> feat/1019
 		CompetitionID:     comp.ID,
 		CompetitionTitle:  comp.Title,
 		PlayerCount:       playerCount,
@@ -675,9 +609,6 @@ func billingReportByCompetition(ctx context.Context, tenantDB dbOrTx, tenantID i
 		BillingPlayerYen:  100 * playerCount, // スコアを登録した参加者は100円
 		BillingVisitorYen: 10 * visitorCount, // ランキングを閲覧だけした(スコアを登録していない)参加者は10円
 		BillingYen:        100*playerCount + 10*visitorCount,
-<<<<<<< HEAD
-	}, nil
-=======
 	}
 	// 計算後の処理でキャッシュする
 	if comp.FinishedAt.Valid {
@@ -685,7 +616,6 @@ func billingReportByCompetition(ctx context.Context, tenantDB dbOrTx, tenantID i
 	}
 
 	return report , nil
->>>>>>> feat/1019
 }
 
 type TenantWithBilling struct {
@@ -1364,19 +1294,11 @@ func playerHandler(c echo.Context) error {
 }
 
 type CompetitionRank struct {
-<<<<<<< HEAD
-	Rank              int64  `json:"rank"`
-	Score             int64  `json:"score"`
-	PlayerID          string `json:"player_id"`
-	PlayerDisplayName string `json:"player_display_name"`
-	RowNum            int64  `json:"-"` // APIレスポンスのJSONには含まれない
-=======
 	Rank              int64  `db:"rank" json:"rank"`
 	Score             int64  `db:"score" json:"score"`
 	PlayerID          string `db:"player_id" json:"player_id"`
 	PlayerDisplayName string `db:"player_display_name" json:"player_display_name"`
 	RowNum            int64  `db:"row_num" json:"-"` // APIレスポンスのJSONには含まれない
->>>>>>> feat/1019
 }
 
 type CompetitionRankingHandlerResult struct {
@@ -1452,59 +1374,6 @@ func competitionRankingHandler(c echo.Context) error {
 		return fmt.Errorf("error flockByTenantID: %w", err)
 	}
 	defer fl.Close()
-<<<<<<< HEAD
-	pss := []PlayerScoreRow{}
-	if err := tenantDB.SelectContext(
-		ctx,
-		&pss,
-		"SELECT * FROM player_score WHERE tenant_id = ? AND competition_id = ? ORDER BY row_num DESC",
-		tenant.ID,
-		competitionID,
-	); err != nil {
-		return fmt.Errorf("error Select player_score: tenantID=%d, competitionID=%s, %w", tenant.ID, competitionID, err)
-	}
-	ranks := make([]CompetitionRank, 0, len(pss))
-	scoredPlayerSet := make(map[string]struct{}, len(pss))
-	for _, ps := range pss {
-		// player_scoreが同一player_id内ではrow_numの降順でソートされているので
-		// 現れたのが2回目以降のplayer_idはより大きいrow_numでスコアが出ているとみなせる
-		if _, ok := scoredPlayerSet[ps.PlayerID]; ok {
-			continue
-		}
-		scoredPlayerSet[ps.PlayerID] = struct{}{}
-		p, err := retrievePlayer(ctx, tenantDB, ps.PlayerID)
-		if err != nil {
-			return fmt.Errorf("error retrievePlayer: %w", err)
-		}
-		ranks = append(ranks, CompetitionRank{
-			Score:             ps.Score,
-			PlayerID:          p.ID,
-			PlayerDisplayName: p.DisplayName,
-			RowNum:            ps.RowNum,
-		})
-	}
-	sort.Slice(ranks, func(i, j int) bool {
-		if ranks[i].Score == ranks[j].Score {
-			return ranks[i].RowNum < ranks[j].RowNum
-		}
-		return ranks[i].Score > ranks[j].Score
-	})
-	pagedRanks := make([]CompetitionRank, 0, 100)
-	for i, rank := range ranks {
-		if int64(i) < rankAfter {
-			continue
-		}
-		pagedRanks = append(pagedRanks, CompetitionRank{
-			Rank:              int64(i + 1),
-			Score:             rank.Score,
-			PlayerID:          rank.PlayerID,
-			PlayerDisplayName: rank.PlayerDisplayName,
-		})
-		if len(pagedRanks) >= 100 {
-			break
-		}
-	}
-=======
 	ranks := []CompetitionRank{}
 	if err := tenantDB.SelectContext(
 		ctx,
@@ -1526,7 +1395,6 @@ func competitionRankingHandler(c echo.Context) error {
 	); err != nil {
 		return fmt.Errorf("error Select player_score: tenantID=%d, competitionID=%s, %w", tenant.ID, competitionID, err)
 	}
->>>>>>> feat/1019
 
 	res := SuccessResult{
 		Status: true,
@@ -1536,11 +1404,7 @@ func competitionRankingHandler(c echo.Context) error {
 				Title:      competition.Title,
 				IsFinished: competition.FinishedAt.Valid,
 			},
-<<<<<<< HEAD
-			Ranks: pagedRanks,
-=======
 			Ranks: ranks,
->>>>>>> feat/1019
 		},
 	}
 	return c.JSON(http.StatusOK, res)
