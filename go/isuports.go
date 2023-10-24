@@ -116,6 +116,10 @@ func SetCacheControlPrivate(next echo.HandlerFunc) echo.HandlerFunc {
 	}
 }
 
+
+var billingCache = NewCache[*BillingReport]()
+var playerCache =  NewCache[PlayerRow]()
+
 // Run は cmd/isuports/main.go から呼ばれるエントリーポイントです
 func Run() {
 	e := echo.New()
@@ -175,6 +179,9 @@ func Run() {
 	}
 	adminDB.SetMaxOpenConns(10)
 	defer adminDB.Close()
+
+	billingCache.Flush()
+	playerCache.Flush()
 
 	port := getEnv("SERVER_APP_PORT", "3000")
 	e.Logger.Infof("starting isuports server on : %s ...", port)
@@ -354,6 +361,11 @@ type PlayerRow struct {
 // 参加者を取得する
 func retrievePlayer(ctx context.Context, tenantDB dbOrTx, id string) (*PlayerRow, error) {
 	var p PlayerRow
+	cached, ok := playerCache.Get(id)
+	if ok {
+		return &cached, nil
+	}
+
 	if err := tenantDB.GetContext(ctx, &p, "SELECT * FROM player WHERE id = ?", id); err != nil {
 		return nil, fmt.Errorf("error Select player: id=%s, %w", id, err)
 	}
@@ -521,7 +533,6 @@ type VisitHistorySummaryRow struct {
 	MinCreatedAt int64  `db:"min_created_at"`
 }
 
-var billingCache = NewCache[*BillingReport]()
 
 
 // 大会ごとの課金レポートを計算する
@@ -808,6 +819,16 @@ func playersAddHandler(c echo.Context) error {
 		}
 
 		now := time.Now().Unix()
+
+		playerCache.Set(fmt.Sprintf("%d-%s", v.tenantID, id), PlayerRow{
+			TenantID:       v.tenantID,
+			ID:             id,
+			DisplayName:    displayName,
+			IsDisqualified: false,
+			CreatedAt:      now,
+			UpdatedAt:      now,
+		})
+
 		if _, err := tenantDB.ExecContext(
 			ctx,
 			"INSERT INTO player (id, tenant_id, display_name, is_disqualified, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
