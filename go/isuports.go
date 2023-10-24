@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-sql-driver/mysql"
@@ -26,9 +27,31 @@ import (
 	"github.com/lestrrat-go/jwx/v2/jwa"
 	"github.com/lestrrat-go/jwx/v2/jwk"
 	"github.com/lestrrat-go/jwx/v2/jwt"
-	
+
 	"sync/atomic"
 )
+type MutexManager struct {
+	m     map[int64]*sync.RWMutex
+	mutex sync.Mutex
+}
+
+func NewMutexManager() *MutexManager {
+	return &MutexManager{
+		m: make(map[int64]*sync.RWMutex),
+	}
+}
+
+func (mm *MutexManager) GetMutex(id int64) *sync.RWMutex {
+	mm.mutex.Lock()
+	defer mm.mutex.Unlock()
+
+	if _, ok := mm.m[id]; !ok {
+		mm.m[id] = &sync.RWMutex{}
+	}
+	return mm.m[id]
+}
+
+var mutexManager = NewMutexManager()
 
 const (
 	tenantDBSchemaFilePath = "../sql/tenant/10_schema.sql"
@@ -116,6 +139,10 @@ func SetCacheControlPrivate(next echo.HandlerFunc) echo.HandlerFunc {
 	}
 }
 
+
+var billingCache = NewCache[*BillingReport]()
+var playerCache =  NewCache[PlayerRow]()
+
 // Run は cmd/isuports/main.go から呼ばれるエントリーポイントです
 func Run() {
 	e := echo.New()
@@ -175,6 +202,9 @@ func Run() {
 	}
 	adminDB.SetMaxOpenConns(10)
 	defer adminDB.Close()
+
+	billingCache.Flush()
+	playerCache.Flush()
 
 	port := getEnv("SERVER_APP_PORT", "3000")
 	e.Logger.Infof("starting isuports server on : %s ...", port)
@@ -354,6 +384,11 @@ type PlayerRow struct {
 // 参加者を取得する
 func retrievePlayer(ctx context.Context, tenantDB dbOrTx, id string) (*PlayerRow, error) {
 	var p PlayerRow
+	cached, ok := playerCache.Get(id)
+	if ok {
+		return &cached, nil
+	}
+
 	if err := tenantDB.GetContext(ctx, &p, "SELECT * FROM player WHERE id = ?", id); err != nil {
 		return nil, fmt.Errorf("error Select player: id=%s, %w", id, err)
 	}
@@ -521,7 +556,6 @@ type VisitHistorySummaryRow struct {
 	MinCreatedAt int64  `db:"min_created_at"`
 }
 
-var billingCache = NewCache[*BillingReport]()
 
 
 // 大会ごとの課金レポートを計算する
@@ -567,11 +601,15 @@ func billingReportByCompetition(ctx context.Context, tenantDB dbOrTx, tenantID i
 	}
 
 	// player_scoreを読んでいるときに更新が走ると不整合が起こるのでロックを取得する
-	fl, err := flockByTenantID(tenantID)
-	if err != nil {
-		return nil, fmt.Errorf("error flockByTenantID: %w", err)
-	}
-	defer fl.Close()
+	// fl, err := flockByTenantID(tenantID)
+	// if err != nil {
+	// 	return nil, fmt.Errorf("error flockByTenantID: %w", err)
+	// }
+	// defer fl.Close()
+
+	rwMutex := mutexManager.GetMutex(tenantID)
+	rwMutex.RLock()
+	defer rwMutex.RUnlock()
 
 	// スコアを登録した参加者のIDを取得する
 	scoredPlayerIDs := []string{}
@@ -801,6 +839,10 @@ func playersAddHandler(c echo.Context) error {
 	displayNames := params["display_name[]"]
 
 	pds := make([]PlayerDetail, 0, len(displayNames))
+
+	placeholders := strings.Repeat("(?, ?, ?, ?, ?, ?),\n", len(displayNames)-1) + "(?, ?, ?, ?, ?, ?)"
+	args := []interface{}{}
+
 	for _, displayName := range displayNames {
 		id, err := dispenseID(ctx)
 		if err != nil {
@@ -808,25 +850,33 @@ func playersAddHandler(c echo.Context) error {
 		}
 
 		now := time.Now().Unix()
-		if _, err := tenantDB.ExecContext(
-			ctx,
-			"INSERT INTO player (id, tenant_id, display_name, is_disqualified, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
-			id, v.tenantID, displayName, false, now, now,
-		); err != nil {
-			return fmt.Errorf(
-				"error Insert player at tenantDB: id=%s, displayName=%s, isDisqualified=%t, createdAt=%d, updatedAt=%d, %w",
-				id, displayName, false, now, now, err,
-			)
-		}
-		p, err := retrievePlayer(ctx, tenantDB, id)
+
+		playerCache.Set(fmt.Sprintf("%d-%s", v.tenantID, id), PlayerRow{
+			TenantID:       v.tenantID,
+			ID:             id,
+			DisplayName:    displayName,
+			IsDisqualified: false,
+			CreatedAt:      now,
+			UpdatedAt:      now,
+		})
 		if err != nil {
 			return fmt.Errorf("error retrievePlayer: %w", err)
 		}
 		pds = append(pds, PlayerDetail{
-			ID:             p.ID,
-			DisplayName:    p.DisplayName,
-			IsDisqualified: p.IsDisqualified,
+			ID:             id,
+			DisplayName:    displayName,
+			IsDisqualified: false,
 		})
+		args = append(args, id)
+		args = append(args, v.tenantID)
+		args = append(args, displayName)
+		args = append(args, false)
+		args = append(args, now)
+		args = append(args, now)
+	}
+	_, err = tenantDB.ExecContext(ctx, "INSERT INTO player (id, tenant_id, display_name, is_disqualified, created_at, updated_at) VALUES "+placeholders, args...)
+	if err != nil {
+		return fmt.Errorf("error Insert player at tenantDB %v", err)
 	}
 
 	res := PlayersAddHandlerResult{
@@ -1053,11 +1103,16 @@ func competitionScoreHandler(c echo.Context) error {
 	}
 
 	// / DELETEしたタイミングで参照が来ると空っぽのランキングになるのでロックする
-	fl, err := flockByTenantID(v.tenantID)
-	if err != nil {
-		return fmt.Errorf("error flockByTenantID: %w", err)
-	}
-	defer fl.Close()
+	// fl, err := flockByTenantID(v.tenantID)
+	// if err != nil {
+	// 	return fmt.Errorf("error flockByTenantID: %w", err)
+	// }
+	// defer fl.Close()
+
+	rwMutex := mutexManager.GetMutex(v.tenantID)
+	rwMutex.Lock()
+	defer rwMutex.Unlock()
+
 	var rowNum int64
 	playerScoreRows := []PlayerScoreRow{}
 	for {
@@ -1241,11 +1296,17 @@ func playerHandler(c echo.Context) error {
 	}
 
 	// player_scoreを読んでいるときに更新が走ると不整合が起こるのでロックを取得する
-	fl, err := flockByTenantID(v.tenantID)
-	if err != nil {
-		return fmt.Errorf("error flockByTenantID: %w", err)
-	}
-	defer fl.Close()
+	// fl, err := flockByTenantID(v.tenantID)
+	// if err != nil {
+	// 	return fmt.Errorf("error flockByTenantID: %w", err)
+	// }
+	// defer fl.Close()
+
+	rwMutex := mutexManager.GetMutex(v.tenantID)
+	rwMutex.RLock()
+	defer rwMutex.RUnlock()
+
+
 	pss := make([]PlayerScoreRow, 0, len(cs))
 	for _, c := range cs {
 		ps := PlayerScoreRow{}
@@ -1369,11 +1430,16 @@ func competitionRankingHandler(c echo.Context) error {
 	}
 
 	// player_scoreを読んでいるときに更新が走ると不整合が起こるのでロックを取得する
-	fl, err := flockByTenantID(v.tenantID)
-	if err != nil {
-		return fmt.Errorf("error flockByTenantID: %w", err)
-	}
-	defer fl.Close()
+	// fl, err := flockByTenantID(v.tenantID)
+	// if err != nil {
+	// 	return fmt.Errorf("error flockByTenantID: %w", err)
+	// }
+	// defer fl.Close()
+
+	rwMutex := mutexManager.GetMutex(v.tenantID)
+	rwMutex.RLock()
+	defer rwMutex.RUnlock()
+
 	ranks := []CompetitionRank{}
 	if err := tenantDB.SelectContext(
 		ctx,
