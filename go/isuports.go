@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-sql-driver/mysql"
@@ -26,9 +27,31 @@ import (
 	"github.com/lestrrat-go/jwx/v2/jwa"
 	"github.com/lestrrat-go/jwx/v2/jwk"
 	"github.com/lestrrat-go/jwx/v2/jwt"
-	
+
 	"sync/atomic"
 )
+type MutexManager struct {
+	m     map[int64]*sync.RWMutex
+	mutex sync.Mutex
+}
+
+func NewMutexManager() *MutexManager {
+	return &MutexManager{
+		m: make(map[int64]*sync.RWMutex),
+	}
+}
+
+func (mm *MutexManager) GetMutex(id int64) *sync.RWMutex {
+	mm.mutex.Lock()
+	defer mm.mutex.Unlock()
+
+	if _, ok := mm.m[id]; !ok {
+		mm.m[id] = &sync.RWMutex{}
+	}
+	return mm.m[id]
+}
+
+var mutexManager = NewMutexManager()
 
 const (
 	tenantDBSchemaFilePath = "../sql/tenant/10_schema.sql"
@@ -578,11 +601,15 @@ func billingReportByCompetition(ctx context.Context, tenantDB dbOrTx, tenantID i
 	}
 
 	// player_scoreを読んでいるときに更新が走ると不整合が起こるのでロックを取得する
-	fl, err := flockByTenantID(tenantID)
-	if err != nil {
-		return nil, fmt.Errorf("error flockByTenantID: %w", err)
-	}
-	defer fl.Close()
+	// fl, err := flockByTenantID(tenantID)
+	// if err != nil {
+	// 	return nil, fmt.Errorf("error flockByTenantID: %w", err)
+	// }
+	// defer fl.Close()
+
+	rwMutex := mutexManager.GetMutex(tenantID)
+	rwMutex.RLock()
+	defer rwMutex.RUnlock()
 
 	// スコアを登録した参加者のIDを取得する
 	scoredPlayerIDs := []string{}
@@ -1074,11 +1101,16 @@ func competitionScoreHandler(c echo.Context) error {
 	}
 
 	// / DELETEしたタイミングで参照が来ると空っぽのランキングになるのでロックする
-	fl, err := flockByTenantID(v.tenantID)
-	if err != nil {
-		return fmt.Errorf("error flockByTenantID: %w", err)
-	}
-	defer fl.Close()
+	// fl, err := flockByTenantID(v.tenantID)
+	// if err != nil {
+	// 	return fmt.Errorf("error flockByTenantID: %w", err)
+	// }
+	// defer fl.Close()
+
+	rwMutex := mutexManager.GetMutex(v.tenantID)
+	rwMutex.Lock()
+	defer rwMutex.Unlock()
+
 	var rowNum int64
 	playerScoreRows := []PlayerScoreRow{}
 	for {
@@ -1262,11 +1294,17 @@ func playerHandler(c echo.Context) error {
 	}
 
 	// player_scoreを読んでいるときに更新が走ると不整合が起こるのでロックを取得する
-	fl, err := flockByTenantID(v.tenantID)
-	if err != nil {
-		return fmt.Errorf("error flockByTenantID: %w", err)
-	}
-	defer fl.Close()
+	// fl, err := flockByTenantID(v.tenantID)
+	// if err != nil {
+	// 	return fmt.Errorf("error flockByTenantID: %w", err)
+	// }
+	// defer fl.Close()
+
+	rwMutex := mutexManager.GetMutex(v.tenantID)
+	rwMutex.RLock()
+	defer rwMutex.RUnlock()
+
+
 	pss := make([]PlayerScoreRow, 0, len(cs))
 	for _, c := range cs {
 		ps := PlayerScoreRow{}
@@ -1390,11 +1428,16 @@ func competitionRankingHandler(c echo.Context) error {
 	}
 
 	// player_scoreを読んでいるときに更新が走ると不整合が起こるのでロックを取得する
-	fl, err := flockByTenantID(v.tenantID)
-	if err != nil {
-		return fmt.Errorf("error flockByTenantID: %w", err)
-	}
-	defer fl.Close()
+	// fl, err := flockByTenantID(v.tenantID)
+	// if err != nil {
+	// 	return fmt.Errorf("error flockByTenantID: %w", err)
+	// }
+	// defer fl.Close()
+
+	rwMutex := mutexManager.GetMutex(v.tenantID)
+	rwMutex.RLock()
+	defer rwMutex.RUnlock()
+
 	ranks := []CompetitionRank{}
 	if err := tenantDB.SelectContext(
 		ctx,
