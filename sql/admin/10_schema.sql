@@ -27,5 +27,9 @@ CREATE TABLE `visit_history` (
   `competition_id` VARCHAR(255) NOT NULL,
   `created_at` BIGINT NOT NULL,
   `updated_at` BIGINT NOT NULL,
+<<<<<<< HEAD
   INDEX `tenant_id_idx` (`tenant_id`)
+=======
+  INDEX `tenant_id_idx` (`tenant_id`, `competition_id`, `player_id`, `created_at`)
+>>>>>>> feat/1019
 ) ENGINE=InnoDB DEFAULT CHARACTER SET=utf8mb4;
